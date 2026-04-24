@@ -21,6 +21,7 @@ Setup (requires running server in separate terminal):
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import logging
 import os
@@ -127,7 +128,7 @@ def apply_chat_template(tokenizer, messages):
         )
 
 
-def rollout_once(
+async def rollout_once(
     trainer: GRPOTrainer,
     env: JobSchedulerEnvEnv,
     tokenizer: AutoTokenizer,
@@ -135,12 +136,12 @@ def rollout_once(
     max_turns: int,
 ) -> dict[str, list]:
     """
-    Run one full job scheduling episode.
+    Run one full job scheduling episode asynchronously.
 
     The agent receives the state, generates actions, and receives rewards.
     Tokens accumulate across turns so GRPO trains on the full episode sequence.
     """
-    result = env.reset()
+    result = await env.reset()
     observation = result.observation
 
     prompt_ids: list[int] = []
@@ -198,7 +199,7 @@ def rollout_once(
         try:
             # Execute action in environment
             action = JobSchedulerEnvAction(action=action_str)
-            result = env.step(action)
+            result = await env.step(action)
             observation = result.observation
             reward = float(result.reward or 0.0)
             step_rewards.append(reward)
@@ -327,12 +328,15 @@ def main() -> None:
         total_rewards: list[float] = []
 
         for prompt_text in prompts:
-            episode = rollout_once(
-                trainer=trainer,
-                env=env,
-                tokenizer=tokenizer,
-                system_prompt=SYSTEM_PROMPT,
-                max_turns=args.max_turns,
+            # Run async rollout_once in sync context
+            episode = asyncio.run(
+                rollout_once(
+                    trainer=trainer,
+                    env=env,
+                    tokenizer=tokenizer,
+                    system_prompt=SYSTEM_PROMPT,
+                    max_turns=args.max_turns,
+                )
             )
             episode_prompt_ids.append(episode["prompt_ids"])
             episode_completion_ids.append(episode["completion_ids"])

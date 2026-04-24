@@ -2,20 +2,19 @@
 """
 GRPO Training Script — Job Scheduler Env
 
-Trains a language model (Qwen2.5) to learn optimal job scheduling policies
-using Group Relative Policy Optimization (GRPO) from TRL.
+Follows the OpenEnv + TRL pattern from tran_example.py.
+Uses GRPOTrainer with vLLM for efficient generation and training.
 
-The agent receives scheduling state as text and generates job-to-machine assignments.
-Each episode is a multi-step scheduling task where the agent must assign all jobs
-before deadlines.
-
-Setup (requires running server in separate terminal):
+Setup (2 terminals):
 
   # Terminal 1: Start OpenEnv server
   uvicorn Job_Scheduler_Env.server.app:app --reload --port 8000
 
-  # Terminal 2: Run training
-  python train.py --model-id Qwen/Qwen2.5-0.5B --env-url http://localhost:8000 --dataset-size 20
+  # Terminal 2: Run training (small test)
+  python Job_Scheduler_Env/train.py --dataset-size 5 --max-steps 20
+
+  # Or full training
+  python Job_Scheduler_Env/train.py --dataset-size 50 --max-steps 500
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-# Silence TRL experimental warning for rollout_func
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("TRL_EXPERIMENTAL_SILENCE", "1")
 
 from datasets import Dataset
@@ -45,66 +44,48 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 
-# System prompt: tells the model how to behave
-SYSTEM_PROMPT = """You are an intelligent job scheduler. Your task is to assign jobs to machines efficiently.
+SYSTEM_PROMPT = """You are a job scheduler. Analyze the scheduling state and output the next action.
 
-Output ONE job-to-machine assignment per turn in the format: (job_id, machine_id)
+Output ONLY: (job_id, machine_id)
 
-IMPORTANT:
-- Only assign jobs that have arrived (arrival_time <= current_time)
-- Only assign jobs that haven't been scheduled yet (done=false, is_happening=false)
-- Only assign to machines that are free (occupied=false)
-- Consider job deadlines to avoid late completions
-- No explanations or markdown, just the action tuple."""
+Constraints:
+- Only assign arrived jobs (arrival_time <= current_time)
+- Only assign unscheduled jobs (done=false, is_happening=false)
+- Only assign to free machines (occupied=false)
+- Consider deadlines"""
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="GRPO training for Job Scheduler")
     parser.add_argument("--model-id", default="Qwen/Qwen2.5-0.5B", help="Model to fine-tune")
     parser.add_argument("--env-url", default="http://localhost:8000", help="OpenEnv server URL")
-    parser.add_argument("--dataset-size", type=int, default=20, help="Number of training episodes")
-    parser.add_argument("--max-turns", type=int, default=10, help="Max steps per episode")
-    parser.add_argument("--max-new-tokens", type=int, default=50, help="Max tokens per generation")
-    parser.add_argument("--num-generations", type=int, default=4, help="G for GRPO")
-    parser.add_argument("--learning-rate", type=float, default=5e-6, help="Learning rate")
-    parser.add_argument("--num-epochs", type=int, default=1, help="Training epochs")
+    parser.add_argument("--dataset-size", type=int, default=20, help="Number of episodes")
+    parser.add_argument("--max-turns", type=int, default=5, help="Max steps per episode")
+    parser.add_argument("--max-completion-length", type=int, default=20, help="Max tokens per generation")
+    parser.add_argument("--num-generations", type=int, default=2, help="G for GRPO")
+    parser.add_argument("--learning-rate", type=float, default=2e-6, help="Learning rate")
+    parser.add_argument("--max-steps", type=int, default=100, help="Max training steps")
     parser.add_argument("--output-dir", default=None, help="Output directory")
-    parser.add_argument("--temperature", type=float, default=1.0, help="Generation temperature")
-    parser.add_argument("--logging-steps", type=int, default=1, help="Logging frequency")
-    parser.add_argument("--lora-r", type=int, default=16, help="LoRA rank")
-    parser.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha")
-    parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout")
+    parser.add_argument("--lora-r", type=int, default=8, help="LoRA rank")
+    parser.add_argument("--lora-alpha", type=int, default=16, help="LoRA alpha")
     parser.add_argument("--reward-log", default="reward_log.csv", help="CSV path for rewards")
     return parser.parse_args()
 
 
 def format_observation(obs) -> str:
-    """Format observation into agent-readable text."""
-    current_time = getattr(obs, "current_time", 0)
-    job_info = getattr(obs, "job_info", [])
-    machine_info = getattr(obs, "machine_info", [])
-    llm_description = getattr(obs, "llm_description", "")
+    """Format observation into compact agent-readable text."""
+    job_info = obs.job_info
+    machine_info = obs.machine_info
+    llm_description = obs.llm_description
 
-    # Concise state representation
-    pending_jobs = [j for j in job_info if not j["done"] and not j["is_happening"]]
-    available_machines = [m for m in machine_info if not m["occupied"]]
+    pending = [j for j in job_info if not j["done"] and not j["is_happening"]]
+    free_machines = len([m for m in machine_info if not m["occupied"]])
 
-    text = f"""{llm_description}
-
-AVAILABLE JOBS: {len(pending_jobs)}
-{[f"Job {j['id']}: deadline={j['deadline']}, duration={j['duration']}, arrival={j['arrival']}" for j in pending_jobs[:3]]}
-
-FREE MACHINES: {len(available_machines)}/{len(machine_info)}
-{[f"Machine {m['id']}" for m in available_machines]}
-
-Assign the next job to a free machine. Output: (job_id, machine_id)"""
-    return text
+    return f"{llm_description}\nPending: {len(pending)} | Free: {free_machines}/{len(machine_info)}\nAction:"
 
 
 def parse_action(text: str) -> str:
-    """Extract job-to-machine action from model response."""
-    # Look for pattern like (123, 456) in the response
+    """Extract (job_id, machine_id) from model output."""
     match = re.search(r'\(\s*(\d+)\s*,\s*(\d+)\s*\)', text)
     if match:
         return f"({match.group(1)}, {match.group(2)})"
@@ -138,8 +119,7 @@ async def rollout_once(
     """
     Run one full job scheduling episode asynchronously.
 
-    The agent receives the state, generates actions, and receives rewards.
-    Tokens accumulate across turns so GRPO trains on the full episode sequence.
+    Token accumulation across turns for episode-level GRPO training.
     """
     result = await env.reset()
     observation = result.observation
@@ -150,25 +130,24 @@ async def rollout_once(
     step_rewards: list[float] = []
 
     episode_history: list[dict] = []
-    MAX_TOTAL_TOKENS = 2048
+    MAX_TOTAL_TOKENS = 512  # Cap to prevent OOM
 
-    for turn in range(max_turns):
+    for _ in range(max_turns):
         if result.done:
             break
 
         if len(completion_ids) >= MAX_TOTAL_TOKENS:
             break
 
-        # Build prompt with context
+        # Build prompt with minimal history
         history_text = ""
         if episode_history:
-            history_text = "PREVIOUS ACTIONS:\n"
-            for entry in episode_history[-2:]:  # last 2 actions for context
-                history_text += f"- {entry['action']}: {entry['feedback']}\n"
-            history_text += "\n---\n\n"
+            history_text = "PREV: " + " | ".join(
+                f"{h['action']}" for h in episode_history[-2:]
+            ) + "\n"
 
         obs_text = format_observation(observation)
-        user_prompt = history_text + f"CURRENT STATE:\n{obs_text}"
+        user_prompt = history_text + obs_text
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -176,8 +155,13 @@ async def rollout_once(
         ]
         prompt_text = apply_chat_template(tokenizer, messages)
 
-        # Generate action with vLLM via TRL
-        rollout_outputs = generate_rollout_completions(trainer, [prompt_text])[0]
+        # Generate with vLLM via TRL with strict length limit
+        # Note: max_completion_length from config should apply, but enforce here too
+        rollout_outputs = generate_rollout_completions(
+            trainer,
+            [prompt_text],
+            max_length=args.max_completion_length + 50,  # Buffer for prompt
+        )[0]
         prompt_ids.extend(rollout_outputs["prompt_ids"])
         completion_ids.extend(rollout_outputs["completion_ids"])
         logprobs.extend(rollout_outputs["logprobs"])
@@ -186,18 +170,18 @@ async def rollout_once(
             rollout_outputs["completion_ids"], skip_special_tokens=True
         )
 
-        # Parse action from model output
+        # Parse action
         action_str = parse_action(completion_text)
         if not action_str:
             step_rewards.append(-1.0)
             episode_history.append({
-                "action": completion_text[:50],
-                "feedback": "Invalid action format",
+                "action": completion_text[:30],
+                "reward": -1.0,
             })
             continue
 
         try:
-            # Execute action in environment
+            # Execute action
             action = JobSchedulerEnvAction(action=action_str)
             result = await env.step(action)
             observation = result.observation
@@ -206,7 +190,7 @@ async def rollout_once(
 
             episode_history.append({
                 "action": action_str,
-                "feedback": observation.llm_description[:100],
+                "reward": reward,
             })
 
             if result.done:
@@ -216,11 +200,10 @@ async def rollout_once(
             step_rewards.append(-0.5)
             episode_history.append({
                 "action": action_str,
-                "feedback": f"Error: {str(e)[:50]}",
+                "reward": -0.5,
             })
             break
 
-    # Compute episode reward
     total_reward = sum(step_rewards) if step_rewards else -1.0
 
     return {
@@ -231,67 +214,65 @@ async def rollout_once(
     }
 
 
-# Reward functions (TRL convention)
+# Reward functions
 def reward_total(completions: list[str], **kwargs) -> list[float]:
-    """Return total episode reward for each completion."""
+    """Return total episode reward."""
     rewards = kwargs.get("total_reward", [])
     return [float(r) for r in rewards] if rewards else [0.0 for _ in completions]
 
 
 def main() -> None:
-    """Main training loop."""
     args = parse_args()
 
     logger.info("=" * 60)
     logger.info("Job Scheduler — GRPO Training (OpenEnv + TRL)")
     logger.info("=" * 60)
-    logger.info(f"Agent model:    {args.model_id}")
-    logger.info(f"Env URL:        {args.env_url}")
-    logger.info(f"Episodes:       {args.dataset_size}")
-    logger.info(f"Generations/G:  {args.num_generations}")
+    logger.info(f"Agent model:           {args.model_id}")
+    logger.info(f"Episodes:              {args.dataset_size}")
+    logger.info(f"Max completion length: {args.max_completion_length}")
+    logger.info(f"Max steps:             {args.max_steps}")
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Connect to environment
+    # Create environment (async client)
     env = JobSchedulerEnvEnv(base_url=args.env_url)
 
-    # Dataset (each entry triggers one episode)
-    dataset = Dataset.from_dict({"prompt": ["Schedule jobs optimally"] * args.dataset_size})
+    # Dataset
+    dataset_prompt = "Schedule jobs optimally"
+    dataset = Dataset.from_dict({"prompt": [dataset_prompt] * args.dataset_size})
 
     # Output directory
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     model_name_clean = args.model_id.replace("/", "-")
-    default_output_dir = Path("outputs") / f"job-scheduler-grpo-{model_name_clean}-{timestamp}"
-    output_dir = Path(args.output_dir or default_output_dir)
+    output_dir = Path(args.output_dir or f"outputs/job-scheduler-{model_name_clean}-{timestamp}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # GRPO config
+    # GRPO config with learning-friendly hyperparameters
     grpo_config = GRPOConfig(
         use_vllm=True,
         vllm_mode="colocate",
         output_dir=str(output_dir),
-        num_train_epochs=args.num_epochs,
+        max_steps=args.max_steps,
         learning_rate=args.learning_rate,
-        lr_scheduler_type="cosine",
-        max_grad_norm=1.0,
-        gradient_accumulation_steps=4,
         per_device_train_batch_size=1,
         generation_batch_size=args.num_generations,
         num_generations=args.num_generations,
-        max_completion_length=args.max_new_tokens,
-        logging_steps=args.logging_steps,
-        save_strategy="steps",
-        save_steps=5,
-        temperature=args.temperature,
+        max_completion_length=args.max_completion_length,
+        # Prevent policy divergence
+        temperature=0.5,  # Lower = closer to base model
+        lr_scheduler_type="cosine",
+        warmup_steps=2,
+        max_grad_norm=0.5,  # Tighter gradient clipping
+        beta=0.1,  # Higher KL penalty to prevent divergence
+        # Logging
+        logging_steps=1,
+        save_steps=10,
         report_to="none",
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        loss_type="dapo",
-        mask_truncated_completions=True,
-        beta=0.01,
     )
 
     # CSV logging
@@ -311,16 +292,17 @@ def main() -> None:
             writer.writerow([episode_counter[0], total_r, datetime.now().isoformat()])
 
         n = len(all_rewards)
-        mean_all = sum(all_rewards) / n
+        mean = sum(all_rewards) / n
         last_5 = all_rewards[-5:]
         mean_5 = sum(last_5) / len(last_5)
 
-        logger.info(
-            f"Episode {episode_counter[0]}: reward={total_r:.2f} | "
-            f"mean={mean_all:.2f}, mean(5)={mean_5:.2f}"
-        )
+        logger.info(f"Episode {episode_counter[0]}: reward={total_r:.2f} | mean={mean:.2f}, mean(5)={mean_5:.2f}")
 
-    # Rollout function (called by GRPO trainer each step)
+    # Create persistent event loop for async operations
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # Rollout function
     def rollout_func(prompts: list[str], trainer: GRPOTrainer) -> dict[str, list]:
         episode_prompt_ids: list[list[int]] = []
         episode_completion_ids: list[list[int]] = []
@@ -328,8 +310,8 @@ def main() -> None:
         total_rewards: list[float] = []
 
         for prompt_text in prompts:
-            # Run async rollout_once in sync context
-            episode = asyncio.run(
+            # Run async rollout using persistent event loop
+            episode = loop.run_until_complete(
                 rollout_once(
                     trainer=trainer,
                     env=env,
@@ -355,7 +337,7 @@ def main() -> None:
     peft_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
+        lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
@@ -374,10 +356,19 @@ def main() -> None:
 
     # Train
     logger.info("Starting GRPO training...")
+    logger.info("⚠️  First, run: python train_debug.py")
+    logger.info("    Verify: (1) rewards vary, (2) actions parse, (3) no errors")
     try:
         trainer.train()
     finally:
-        env.close()
+        try:
+            loop.run_until_complete(env.close())
+        except Exception:
+            try:
+                env.close()
+            except Exception:
+                pass
+        loop.close()
 
     # Save
     trainer.save_model(str(output_dir))

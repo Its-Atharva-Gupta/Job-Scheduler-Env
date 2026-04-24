@@ -28,8 +28,12 @@ except ImportError:
     from models import JobSchedulerEnvAction, JobSchedulerEnvObservation
 
 class Job:
+    _counter = 0
+
     def __init__(self, current_time):
-        self.id = int(time.time() * 1000000) + current_time + random.randint(3000, 9999)
+        # Use short, simple IDs to prevent model hallucination
+        Job._counter += 1
+        self.id = 1000 + Job._counter  # e.g., 1001, 1002, 1003
         self.duration = random.randint(1, 10)
         self.deadline = current_time + random.randint(5, 25)
         self.arrival = current_time + random.randint(0, 5)
@@ -51,8 +55,12 @@ def job_as_json(jobs: list[Job]):
         return data 
 
 class Machine:
+    _counter = 0
+
     def __init__(self, current_time):
-        self.id = int(time.time() * 1000000) + current_time + random.randint(3000, 9999)
+        # Use short, simple IDs to prevent model hallucination
+        Machine._counter += 1
+        self.id = 2000 + Machine._counter  # e.g., 2001, 2002, 2003
         self.occupied = False
         self.become_free_time = 0
         self.job_running: Job | None = None
@@ -105,6 +113,10 @@ class JobSchedulerEnvEnvironment(Environment):
         Returns:
             JobSchedulerEnvObservation with a ready message
         """
+        # Reset ID counters for new episode (IDs will be 1001-1003, 2001-2003)
+        Job._counter = 0
+        Machine._counter = 0
+
         self.current_time = 0
         task_level = kwargs.get("task_level", 1)
 

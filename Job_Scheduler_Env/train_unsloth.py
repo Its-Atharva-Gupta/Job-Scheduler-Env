@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 GRPO Training Script with Unsloth — Job Scheduler Env
-
-Uses Unsloth for fast job scheduling strategy learning.
+Simple: just generate (job_id, machine_id) tuples.
 """
 
 import asyncio
@@ -11,14 +10,14 @@ import re
 from datasets import Dataset
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 # === UNSLOTH SETUP ===
 from unsloth import FastLanguageModel
 
-max_seq_length = 2048
-lora_rank = 8
+max_seq_length = 768
+lora_rank = 4
 
 logger.info("Loading Qwen2.5 1.5B with Unsloth...")
 model, tokenizer = FastLanguageModel.from_pretrained(
@@ -38,128 +37,45 @@ model = FastLanguageModel.get_peft_model(
     random_state=3407,
 )
 
-# === ENVIRONMENT SETUP ===
+# === ENVIRONMENT ===
 from client import JobSchedulerEnvEnv
 from models import JobSchedulerEnvAction
 
-env = JobSchedulerEnvEnv(base_url="http://localhost:8000")
-
-# === TRAINING PROMPT ===
-PROMPT = """Analyze the job scheduling state and output the next action.
-Current time, pending jobs, and available machines are provided.
+# === PROMPT ===
+prompt = """Schedule the next job to a machine.
 Output ONLY: (job_id, machine_id)
-
-Example:
-(0, 1)
+Example: (0, 1)
+YOu are provided a number of Jobs and 3 Machines. Your task is to schedule the jobs to minimize Machine idle time, and finish tasks before deadline. Only output (Job_id, Machine_id) NOTHING ELSE. Just (Job_id, MAchine_id). For example if you wish to set  
 """.strip()
 
-# === UTILITY FUNCTIONS ===
-def parse_action(text: str) -> str:
-    """Extract (job_id, machine_id) from model output."""
-    match = re.search(r'\(\s*(\d+)\s*,\s*(\d+)\s*\)', text)
-    if match:
-        return f"({match.group(1)}, {match.group(2)})"
-    return None
-
-def format_observation(obs) -> str:
-    """Format observation for the model."""
-    pending = [j for j in obs.job_info if not j["done"] and not j["is_happening"]]
-    free_machines = len([m for m in obs.machine_info if not m["occupied"]])
-    return f"Time: {obs.current_time}, Pending jobs: {len(pending)}, Free machines: {free_machines}/{len(obs.machine_info)}"
-
-async def evaluate_strategy(max_turns: int = 5):
-    """Run one episode and collect rewards."""
-    result = await env.reset()
-    observation = result.observation
-
-    step_rewards = []
-
-    for turn in range(max_turns):
-        if result.done:
-            break
-
-        # Format prompt for this step
-        obs_text = format_observation(observation)
-        prompt_text = tokenizer.apply_chat_template(
-            [
-                {"role": "system", "content": PROMPT},
-                {"role": "user", "content": obs_text},
-            ],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-        # Generate action
-        inputs = tokenizer(prompt_text, return_tensors="pt").to("cuda")
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=20,
-            temperature=1.0,
-            do_sample=True,
-        )
-        completion = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-        # Extract action
-        action_str = parse_action(completion)
-        logger.debug(f"Turn {turn + 1}: Generated '{completion}' -> Action: {action_str}")
-
-        if not action_str:
-            step_rewards.append(-1.0)
-            continue
-
-        try:
-            # Execute action
-            action = JobSchedulerEnvAction(action=action_str)
-            result = await env.step(action)
-            observation = result.observation
-            reward = float(result.reward or 0.0)
-            step_rewards.append(reward)
-            logger.debug(f"Turn {turn + 1}: Reward: {reward}, Done: {result.done}")
-
-            if result.done:
-                break
-        except Exception as e:
-            logger.debug(f"Turn {turn + 1}: Error: {e}")
-            step_rewards.append(-0.5)
-
-    total_reward = sum(step_rewards) if step_rewards else -1.0
-    return total_reward, step_rewards
-
 # === REWARD FUNCTION ===
-def compute_reward(completions, **kwargs):
-    """Reward based on total episode reward."""
+def get_reward(completions, **kwargs):
+    """Simple reward: return collected rewards from episodes."""
     total_rewards = kwargs.get("total_reward", [])
     if total_rewards:
         return [float(r) for r in total_rewards]
     return [0.0] * len(completions)
 
-# === TRAINING SETUP ===
+# === TRAINING ===
 def main():
     logger.info("=" * 70)
-    logger.info("Job Scheduler — GRPO Training with Unsloth")
+    logger.info("Job Scheduler — GRPO Training")
     logger.info("=" * 70)
 
-    # Create dataset
     dataset = Dataset.from_list([
-        {
-            "prompt": [{"role": "user", "content": PROMPT}],
-            "answer": 0,
-        } for _ in range(50)
+        {"prompt": [{"role": "user", "content": prompt}], "answer": 0}
+        for _ in range(1)  # Just 1 episode for testing
     ])
 
-    # Calculate prompt length
-    sample_prompt = tokenizer.apply_chat_template(
-        [{"role": "user", "content": "Time: 0, Pending jobs: 3, Free machines: 2/3"}],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-    max_prompt_length = len(sample_prompt.split()) + 50
-    max_completion_length = 20  # Just need "(X, Y)"
+    max_prompt_length = len(tokenizer.apply_chat_template(
+        [{"role": "user", "content": prompt}],
+        add_generation_prompt=True
+    )) + 1
+    max_completion_length = max_seq_length - max_prompt_length
 
     logger.info(f"Max prompt length: {max_prompt_length}")
     logger.info(f"Max completion length: {max_completion_length}")
 
-    # GRPO Training config
     from trl import GRPOConfig, GRPOTrainer
 
     training_args = GRPOConfig(
@@ -175,55 +91,105 @@ def main():
         num_generations=2,
         max_prompt_length=max_prompt_length,
         max_completion_length=max_completion_length,
-        max_steps=50,
-        save_steps=10,
+        max_steps=1,  # Just 1 step for testing
+        save_steps=20,
         report_to="none",
         output_dir="outputs_scheduler",
     )
 
-    logger.info("Creating trainer...")
+    # Custom rollout function that runs episodes
+    env = JobSchedulerEnvEnv(base_url="http://localhost:8000")
 
     def rollout_func(prompts, trainer):
-        """Rollout function that evaluates strategies."""
+        """Rollout: run episodes and collect rewards."""
         total_rewards = []
-        prompt_ids_list = []
-        completion_ids_list = []
-        logprobs_list = []
 
-        for idx, prompt in enumerate(prompts):
-            logger.info(f"Episode {idx}")
-            total_reward, step_rewards = asyncio.run(evaluate_strategy(max_turns=5))
-            total_rewards.append(total_reward)
-            logger.info(f"Episode {idx}: Total reward = {total_reward:.2f}, Steps = {len(step_rewards)}")
-
-            # Return minimal token data
-            prompt_ids_list.append([])
-            completion_ids_list.append([])
-            logprobs_list.append([])
+        for idx, _ in enumerate(prompts):
+            asyncio.run(_run_episode(env, total_rewards))
 
         return {
-            "prompt_ids": prompt_ids_list,
-            "completion_ids": completion_ids_list,
-            "logprobs": logprobs_list,
+            "prompt_ids": [[] for _ in prompts],
+            "completion_ids": [[] for _ in prompts],
+            "logprobs": [[] for _ in prompts],
             "total_reward": total_rewards,
         }
+
+    async def _run_episode(env, total_rewards):
+        """Run one episode."""
+        logger.info("\n" + "=" * 70)
+        logger.info("EPISODE START")
+        logger.info("=" * 70)
+
+        result = await env.reset()
+        obs = result.observation
+        episode_reward = 0.0
+        steps = 0
+
+        logger.info(f"Initial state: time={obs.current_time}, jobs={len(obs.job_info)}, machines={len(obs.machine_info)}")
+        logger.info(f"Jobs: {obs.job_info}")
+        logger.info(f"Machines: {obs.machine_info}")
+
+        for turn in range(5):
+            if result.done:
+                logger.info("Environment signaled done")
+                break
+
+            # Format state for model
+            pending = len([j for j in obs.job_info if not j["done"] and not j["is_happening"]])
+            free = len([m for m in obs.machine_info if not m["occupied"]])
+            state_text = f"Time: {obs.current_time}, Pending: {pending}, Free: {free}/{len(obs.machine_info)}"
+
+            logger.info(f"\n--- TURN {turn + 1} ---")
+            logger.info(f"State: {state_text}")
+
+            # Generate action
+            full_prompt = f"{prompt}\n\n{state_text}\n\nAction:"
+            logger.info(f"Prompt:\n{full_prompt}")
+
+            inputs = tokenizer(full_prompt, return_tensors="pt").to("cuda")
+            outputs = model.generate(**inputs, max_new_tokens=10, temperature=1.0, do_sample=True)
+            completion = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+            logger.info(f"Raw completion: '{completion}'")
+
+            # Parse tuple
+            match = re.search(r'\(\s*(\d+)\s*,\s*(\d+)\s*\)', completion)
+            if not match:
+                logger.warning(f"❌ Failed to parse action from: {completion}")
+                episode_reward -= 1.0
+                continue
+
+            action_str = f"({match.group(1)}, {match.group(2)})"
+            logger.info(f"✓ Parsed action: {action_str}")
+
+            try:
+                result = await env.step(JobSchedulerEnvAction(action=action_str))
+                obs = result.observation
+                step_reward = float(result.reward or 0.0)
+                episode_reward += step_reward
+                logger.info(f"Step reward: {step_reward}, Total: {episode_reward:.2f}, Done: {result.done}")
+                steps += 1
+            except Exception as e:
+                logger.error(f"❌ Error executing action: {e}", exc_info=True)
+                episode_reward -= 0.5
+
+        logger.info(f"\n" + "=" * 70)
+        logger.info(f"EPISODE END: total_reward={episode_reward:.2f}, steps={steps}")
+        logger.info("=" * 70 + "\n")
+        total_rewards.append(episode_reward)
 
     trainer = GRPOTrainer(
         model=model,
         processing_class=tokenizer,
-        reward_funcs=[compute_reward],
+        reward_funcs=[get_reward],
         args=training_args,
         train_dataset=dataset,
         rollout_func=rollout_func,
     )
 
     logger.info("Starting training...")
-    try:
-        trainer.train()
-    finally:
-        asyncio.run(env.close())
+    trainer.train()
 
-    # Save model
     output_dir = Path("outputs_scheduler/final_model")
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Saving model to {output_dir}")

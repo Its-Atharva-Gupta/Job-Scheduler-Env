@@ -15,22 +15,15 @@ description = "Job Scheduler Env environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
     "datasets>=4.8.4",
-    # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
-    # install from github
-    # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
     "openenv-core[core]>=0.2.2",
-    # Environment-specific dependencies
-    # Add all dependencies needed for your environment here
-    # Examples:
-    # "numpy>=1.19.0",
-    # "torch>=2.0.0",
-    # "gymnasium>=0.29.0",
-    # "openspiel>=1.0.0",
-    # "smolagents>=1.22.0,<2",
-    "peft>=0.19.1",
-    "transformers>=5.6.2",
-    "trl>=1.2.0",
-    "vllm>=0.19.1",
+    # Unsloth training stack
+    "torch>=2.8.0",
+    "triton>=3.4.0",
+    "transformers==4.56.2",
+    "tokenizers",
+    "bitsandbytes",
+    "unsloth[base] @ git+https://github.com/unslothai/unsloth.git",
+    "unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo.git",
 ]
 
 [project.optional-dependencies]

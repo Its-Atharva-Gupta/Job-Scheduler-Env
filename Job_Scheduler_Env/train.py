@@ -40,8 +40,9 @@ from trl.experimental.openenv import generate_rollout_completions
 from client import JobSchedulerEnvEnv
 from models import JobSchedulerEnvAction
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 SYSTEM_PROMPT = """You are a job scheduler. Analyze the scheduling state and output the next action.
@@ -57,11 +58,12 @@ Constraints:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GRPO training for Job Scheduler")
-    parser.add_argument("--model-id", default="Qwen/Qwen2.5-0.5B", help="Model to fine-tune")
+    parser.add_argument("--model-id", default="Qwen/Qwen2.5-1.5B", help="Model to fine-tune")
     parser.add_argument("--env-url", default="http://localhost:8000", help="OpenEnv server URL")
     parser.add_argument("--dataset-size", type=int, default=20, help="Number of episodes")
     parser.add_argument("--max-turns", type=int, default=5, help="Max steps per episode")
     parser.add_argument("--max-completion-length", type=int, default=20, help="Max tokens per generation")
+    parser.add_argument("--context-length", type=int, default=2048, help="Model context window length")
     parser.add_argument("--num-generations", type=int, default=2, help="G for GRPO")
     parser.add_argument("--learning-rate", type=float, default=2e-6, help="Learning rate")
     parser.add_argument("--max-steps", type=int, default=100, help="Max training steps")
@@ -115,14 +117,17 @@ async def rollout_once(
     tokenizer: AutoTokenizer,
     system_prompt: str,
     max_turns: int,
+    episode_id: int = 0,
 ) -> dict[str, list]:
     """
     Run one full job scheduling episode asynchronously.
 
     Token accumulation across turns for episode-level GRPO training.
     """
+    logger.info(f"=== EPISODE {episode_id} START ===")
     result = await env.reset()
     observation = result.observation
+    logger.info(f"Environment reset. Initial observation: current_time={observation.current_time}, num_jobs={len(observation.job_info)}, num_machines={len(observation.machine_info)}")
 
     prompt_ids: list[int] = []
     completion_ids: list[int] = []
@@ -131,12 +136,16 @@ async def rollout_once(
 
     episode_history: list[dict] = []
     MAX_TOTAL_TOKENS = 512  # Cap to prevent OOM
+    turn = 0
 
-    for _ in range(max_turns):
+    for turn_idx in range(max_turns):
+        turn = turn_idx + 1
         if result.done:
+            logger.info(f"Episode done at turn {turn}")
             break
 
         if len(completion_ids) >= MAX_TOTAL_TOKENS:
+            logger.info(f"Token limit reached at turn {turn}")
             break
 
         # Build prompt with minimal history
@@ -148,6 +157,7 @@ async def rollout_once(
 
         obs_text = format_observation(observation)
         user_prompt = history_text + obs_text
+        logger.debug(f"TURN {turn} PROMPT:\n{user_prompt}")
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -155,13 +165,15 @@ async def rollout_once(
         ]
         prompt_text = apply_chat_template(tokenizer, messages)
 
+        logger.info(f"TURN {turn}: Generating completion (prompt_len={len(prompt_text.split())} words)")
+
         # Generate with vLLM via TRL with strict length limit
-        # Note: max_completion_length from config should apply, but enforce here too
+        # max_completion_length is configured in GRPOConfig
         rollout_outputs = generate_rollout_completions(
             trainer,
             [prompt_text],
-            max_length=args.max_completion_length + 50,  # Buffer for prompt
         )[0]
+
         prompt_ids.extend(rollout_outputs["prompt_ids"])
         completion_ids.extend(rollout_outputs["completion_ids"])
         logprobs.extend(rollout_outputs["logprobs"])
@@ -170,9 +182,15 @@ async def rollout_once(
             rollout_outputs["completion_ids"], skip_special_tokens=True
         )
 
+        logger.info(f"TURN {turn}: Raw completion: '{completion_text}'")
+        logger.info(f"TURN {turn}: Completion tokens: {len(rollout_outputs['completion_ids'])}, logprobs: {rollout_outputs.get('logprobs', [])}")
+
         # Parse action
         action_str = parse_action(completion_text)
+        logger.info(f"TURN {turn}: Parsed action: {action_str}")
+
         if not action_str:
+            logger.warning(f"TURN {turn}: Failed to parse action from '{completion_text}'")
             step_rewards.append(-1.0)
             episode_history.append({
                 "action": completion_text[:30],
@@ -182,11 +200,15 @@ async def rollout_once(
 
         try:
             # Execute action
+            logger.info(f"TURN {turn}: Executing action {action_str}")
             action = JobSchedulerEnvAction(action=action_str)
             result = await env.step(action)
             observation = result.observation
             reward = float(result.reward or 0.0)
             step_rewards.append(reward)
+
+            logger.info(f"TURN {turn}: Step result - reward={reward}, done={result.done}, current_time={observation.current_time}")
+            logger.info(f"TURN {turn}: Observation - {len([j for j in observation.job_info if not j['done']])} pending jobs, {len([m for m in observation.machine_info if not m['occupied']])} free machines")
 
             episode_history.append({
                 "action": action_str,
@@ -194,9 +216,10 @@ async def rollout_once(
             })
 
             if result.done:
+                logger.info(f"TURN {turn}: Episode done signal received")
                 break
         except Exception as e:
-            logger.warning(f"Step error: {e}")
+            logger.error(f"TURN {turn}: Step error: {e}", exc_info=True)
             step_rewards.append(-0.5)
             episode_history.append({
                 "action": action_str,
@@ -205,6 +228,9 @@ async def rollout_once(
             break
 
     total_reward = sum(step_rewards) if step_rewards else -1.0
+    logger.info(f"=== EPISODE {episode_id} END ===")
+    logger.info(f"Total turns: {turn}, Total reward: {total_reward}, Step rewards: {step_rewards}")
+    logger.info(f"Total prompt_ids: {len(prompt_ids)}, completion_ids: {len(completion_ids)}, logprobs: {len(logprobs)}")
 
     return {
         "prompt_ids": prompt_ids,
@@ -218,7 +244,9 @@ async def rollout_once(
 def reward_total(completions: list[str], **kwargs) -> list[float]:
     """Return total episode reward."""
     rewards = kwargs.get("total_reward", [])
-    return [float(r) for r in rewards] if rewards else [0.0 for _ in completions]
+    result = [float(r) for r in rewards] if rewards else [0.0 for _ in completions]
+    logger.info(f"reward_total called: {len(completions)} completions, rewards={result}")
+    return result
 
 
 def main() -> None:
@@ -261,6 +289,8 @@ def main() -> None:
         generation_batch_size=args.num_generations,
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
+        # Context and length settings
+        max_length=args.context_length,  # Total context window
         # Prevent policy divergence
         temperature=0.5,  # Lower = closer to base model
         lr_scheduler_type="cosine",
@@ -304,13 +334,15 @@ def main() -> None:
 
     # Rollout function
     def rollout_func(prompts: list[str], trainer: GRPOTrainer) -> dict[str, list]:
+        logger.info(f"Rollout batch: {len(prompts)} episodes")
         episode_prompt_ids: list[list[int]] = []
         episode_completion_ids: list[list[int]] = []
         episode_logprobs: list[list[float]] = []
         total_rewards: list[float] = []
 
-        for prompt_text in prompts:
+        for ep_idx, prompt_text in enumerate(prompts):
             # Run async rollout using persistent event loop
+            logger.info(f"Starting episode {ep_idx} in batch")
             episode = loop.run_until_complete(
                 rollout_once(
                     trainer=trainer,
@@ -318,6 +350,7 @@ def main() -> None:
                     tokenizer=tokenizer,
                     system_prompt=SYSTEM_PROMPT,
                     max_turns=args.max_turns,
+                    episode_id=ep_idx,
                 )
             )
             episode_prompt_ids.append(episode["prompt_ids"])
@@ -326,6 +359,7 @@ def main() -> None:
             total_rewards.append(episode["total_reward"])
             log_episode(episode["total_reward"])
 
+        logger.info(f"Rollout batch complete. Rewards: {total_rewards}")
         return {
             "prompt_ids": episode_prompt_ids,
             "completion_ids": episode_completion_ids,
@@ -356,6 +390,16 @@ def main() -> None:
 
     # Train
     logger.info("Starting GRPO training...")
+    logger.info(f"Training config:")
+    logger.info(f"  - Model: {args.model_id}")
+    logger.info(f"  - Context length: {args.context_length}")
+    logger.info(f"  - Dataset size: {args.dataset_size}")
+    logger.info(f"  - Max steps: {args.max_steps}")
+    logger.info(f"  - Max turns per episode: {args.max_turns}")
+    logger.info(f"  - Max completion length: {args.max_completion_length}")
+    logger.info(f"  - Num generations: {args.num_generations}")
+    logger.info(f"  - Learning rate: {args.learning_rate}")
+    logger.info(f"  - Output dir: {output_dir}")
     logger.info("⚠️  First, run: python train_debug.py")
     logger.info("    Verify: (1) rewards vary, (2) actions parse, (3) no errors")
     try:

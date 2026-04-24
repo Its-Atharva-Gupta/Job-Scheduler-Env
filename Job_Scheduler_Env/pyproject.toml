@@ -14,6 +14,7 @@ version = "0.1.0"
 description = "Job Scheduler Env environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
+    "datasets>=4.8.4",
     # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
     # install from github
     # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
@@ -26,6 +27,10 @@ dependencies = [
     # "gymnasium>=0.29.0",
     # "openspiel>=1.0.0",
     # "smolagents>=1.22.0,<2",
+    "peft>=0.19.1",
+    "transformers>=5.6.2",
+    "trl>=1.2.0",
+    "vllm>=0.19.1",
 ]
 
 [project.optional-dependencies]

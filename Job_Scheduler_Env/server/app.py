@@ -36,7 +36,7 @@ except Exception as e:  # pragma: no cover
     ) from e
 
 try:
-    from ..models import JobSchedulerEnvAction, JobSchedulerEnvObservation
+    from models import JobSchedulerEnvAction, JobSchedulerEnvObservation
     from .Job_Scheduler_Env_environment import JobSchedulerEnvEnvironment
 except ModuleNotFoundError:
     from models import JobSchedulerEnvAction, JobSchedulerEnvObservation

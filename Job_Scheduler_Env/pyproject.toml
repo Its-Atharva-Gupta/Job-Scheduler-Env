@@ -14,14 +14,7 @@ version = "0.1.0"
 description = "Job Scheduler Env environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
-    "datasets>=4.8.4",
     "openenv-core[core]>=0.2.2",
-    # Unsloth training stack
-    "torch>=2.8.0",
-    "triton>=3.4.0",
-    "transformers==4.56.2",
-    "tokenizers",
-    "bitsandbytes",
     "unsloth[base] @ git+https://github.com/unslothai/unsloth.git",
     "unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo.git",
 ]

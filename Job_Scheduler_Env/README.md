@@ -113,6 +113,8 @@ train_unsloth_colab.ipynb
 
 It trains `Qwen/Qwen2.5-1.5B-Instruct` with Unsloth + GRPO against the live environment server, and includes a base-vs-fine-tuned comparison cell at the end.
 
+A live run of this notebook is available on Kaggle: https://www.kaggle.com/code/atharvagupta123/notebook24895e5d56
+
 ## Building the Docker Image
 
 ```bash

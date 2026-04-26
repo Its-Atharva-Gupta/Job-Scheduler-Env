@@ -158,7 +158,9 @@ A base model on Level 3 typically outputs valid JSON but assigns jobs out of arr
 
 ## Training setup — GRPO on Qwen2.5-1.5B
 
-The full pipeline lives in `train_unsloth_colab.ipynb`. Key configuration:
+The full pipeline lives in `train_unsloth_colab.ipynb`. A live run of the notebook (with full output and reward logs) is available on Kaggle: https://www.kaggle.com/code/atharvagupta123/notebook24895e5d56
+
+Key configuration:
 
 ```python
 # Model

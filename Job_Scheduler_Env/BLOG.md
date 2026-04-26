@@ -197,13 +197,13 @@ The notebook's final cell loads a fresh copy of the base model and runs both mod
 
 ```
 =============================================
-                       Base    Fine-tuned
+                           Base  Fine-tuned
 =============================================
-Mean reward           3.900         ?
-Median reward         3.000         ?
-Std dev               4.712         ?
-Min reward           -1.000         ?
-Max reward           17.000         ?
+Mean reward               2.300       3.100
+Median reward             1.000       1.000
+Std dev                   4.054       6.095
+Min reward               -1.000      -1.000
+Max reward               15.000      17.000
 =============================================
 ```
 

@@ -28,6 +28,10 @@ Usage:
     python -m server.app
 """
 
+from pathlib import Path
+
+from fastapi.responses import HTMLResponse, RedirectResponse
+
 try:
     from openenv.core.env_server.http_server import create_app
 except Exception as e:  # pragma: no cover
@@ -43,14 +47,32 @@ except ModuleNotFoundError:
     from server.Job_Scheduler_Env_environment import JobSchedulerEnvEnvironment
 
 
-# Create the app with web interface and README integration
 app = create_app(
     JobSchedulerEnvEnvironment,
     JobSchedulerEnvAction,
     JobSchedulerEnvObservation,
     env_name="Job_Scheduler_Env",
-    max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
+    max_concurrent_envs=1,
 )
+
+_UI_PATH = Path(__file__).parent / "static" / "index.html"
+
+
+@app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+async def ui():
+    if _UI_PATH.exists():
+        return _UI_PATH.read_text()
+    return "<html><body><h2>UI not found — use <a href='/docs'>/docs</a> for API access.</h2></body></html>"
+
+
+@app.get("/", response_class=RedirectResponse, include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/ui")
+
+
+@app.get("/web", response_class=RedirectResponse, include_in_schema=False)
+async def web():
+    return RedirectResponse(url="/ui")
 
 
 def main(host: str = "0.0.0.0", port: int = 8000):

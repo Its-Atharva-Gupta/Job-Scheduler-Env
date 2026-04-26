@@ -122,18 +122,19 @@ class JobSchedulerEnvEnvironment(Environment):
 
         if task_level == 1:
             self.num_jobs = 3
+            self.num_machines = 3
         elif task_level == 2:
             self.num_jobs = 5
+            self.num_machines = 4
         else:
-            self.num_jobs = 3
+            self.num_jobs = 7
+            self.num_machines = 5
 
         self.jobs : list[Job]= []
 
         for i in range(self.num_jobs):
             new_job = Job(current_time=self.current_time)
             self.jobs.append(new_job)
-
-        self.num_machines = 3
 
         self.machines : list[Machine] = []
 
@@ -182,7 +183,8 @@ class JobSchedulerEnvEnvironment(Environment):
         if next_events:
             self.current_time = min(next_events)
 
-        # Release completed jobs from machines
+        # Release completed jobs from machines — track which ones are newly done
+        already_done = {j.id for j in self.jobs if j.done}
         for machine in self.machines:
             if machine.occupied and machine.become_free_time <= self.current_time:
                 if machine.job_running:
@@ -190,6 +192,7 @@ class JobSchedulerEnvEnvironment(Environment):
                     machine.job_running.done = True
                 machine.occupied = False
                 machine.job_running = None
+        newly_done = [j for j in self.jobs if j.done and j.id not in already_done]
 
         # Process assignment if valid
         if action_valid:
@@ -204,7 +207,8 @@ class JobSchedulerEnvEnvironment(Environment):
             else:
                 action_valid = False
 
-        reward = compute_reward(self.jobs, self.current_time, action_valid)
+        missed = [j for j in self.jobs if not j.done and not j.is_happening and self.current_time > j.deadline]
+        reward = compute_reward(newly_done, missed, self.current_time, action_valid)
 
         # Check done
         done = all(j.done or self.current_time > j.deadline for j in self.jobs)

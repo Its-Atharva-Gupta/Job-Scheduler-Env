@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Scheduler Environment</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #1e293b;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    h1 { font-size: 1.4rem; font-weight: 700; color: #f8fafc; }
+
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .badge {
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-blue   { background: #1e3a8a; color: #93c5fd; }
+    .badge-green  { background: #14532d; color: #86efac; }
+    .badge-red    { background: #7f1d1d; color: #fca5a5; }
+    .badge-yellow { background: #78350f; color: #fde68a; }
+
+    #done-banner {
+      display: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      margin-bottom: 16px;
+      font-weight: 600;
+      text-align: center;
+    }
+    #done-banner.success { background: #14532d; border: 1px solid #22c55e; color: #86efac; }
+    #done-banner.fail    { background: #7f1d1d; border: 1px solid #ef4444; color: #fca5a5; }
+
+    .desc {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      font-size: 0.875rem;
+      color: #94a3b8;
+      font-style: italic;
+      min-height: 40px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    label { font-size: 0.8rem; color: #94a3b8; }
+
+    select, button {
+      padding: 7px 14px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #1e293b;
+      color: #e2e8f0;
+      font-size: 0.875rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    select:disabled, button:disabled { opacity: 0.4; cursor: not-allowed; }
+    select:not(:disabled):hover, button:not(:disabled):hover { background: #334155; }
+
+    button.primary { background: #1d4ed8; border-color: #1d4ed8; color: #fff; font-weight: 600; }
+    button.primary:not(:disabled):hover { background: #1e40af; }
+    button.reset   { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+    button.reset:hover { background: #991b1b; }
+
+    .assign-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+      flex-wrap: wrap;
+    }
+    .arrow { color: #475569; font-size: 1.1rem; }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .card h2 {
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 12px;
+    }
+
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      font-size: 0.7rem;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 6px 4px;
+      border-bottom: 1px solid #334155;
+    }
+    td { padding: 7px 4px; font-size: 0.82rem; border-bottom: 1px solid #1e293b; }
+    tr:last-child td { border-bottom: none; }
+    code { font-family: monospace; background: #0f172a; padding: 2px 5px; border-radius: 4px; font-size: 0.8rem; }
+
+    .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+    .dot-green  { background: #22c55e; }
+    .dot-yellow { background: #eab308; }
+    .dot-red    { background: #ef4444; }
+    .dot-gray   { background: #475569; }
+
+    .reward-value {
+      font-size: 2.2rem;
+      font-weight: 800;
+      line-height: 1;
+      margin-top: 4px;
+    }
+    .reward-value.pos { color: #22c55e; }
+    .reward-value.neg { color: #ef4444; }
+
+    .log {
+      height: 180px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 0.78rem;
+    }
+    .log-line { padding: 3px 0; border-bottom: 1px solid #1e293b; color: #64748b; }
+    .log-line.pos { color: #4ade80; }
+    .log-line.neg { color: #f87171; }
+    .log-line:last-child { border-bottom: none; }
+
+    .empty-msg { color: #475569; text-align: center; padding: 8px; font-size: 0.82rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🗓️ Job Scheduler Environment</h1>
+  <div class="badges">
+    <span id="badge-time"  class="badge badge-blue">Time: —</span>
+    <span id="badge-step"  class="badge badge-blue">Step: 0</span>
+    <span id="badge-state" class="badge badge-green">Ready</span>
+  </div>
+</header>
+
+<div id="done-banner"></div>
+
+<div class="desc" id="llm-desc">Reset the environment to begin.</div>
+
+<div class="controls">
+  <label>Level</label>
+  <select id="sel-level">
+    <option value="1">1 — 3 jobs · 3 machines</option>
+    <option value="2">2 — 5 jobs · 4 machines</option>
+    <option value="3">3 — 7 jobs · 5 machines</option>
+  </select>
+  <button class="reset" onclick="doReset()">↺ Reset</button>
+
+  <div class="assign-group">
+    <select id="sel-job"     disabled><option>— job —</option></select>
+    <span class="arrow">→</span>
+    <select id="sel-machine" disabled><option>— machine —</option></select>
+    <button class="primary" id="btn-assign" disabled onclick="doAssign()">Assign</button>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Jobs</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Duration</th><th>Arrival</th><th>Deadline</th><th>Status</th></tr></thead>
+      <tbody id="tbl-jobs"><tr><td colspan="5" class="empty-msg">No data</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Machines</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Status</th><th>Running Job</th><th>Free At</th></tr></thead>
+      <tbody id="tbl-machines"><tr><td colspan="4" class="empty-msg">No data</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Total Reward</h2>
+    <div class="reward-value pos" id="total-reward">0.00</div>
+  </div>
+  <div class="card">
+    <h2>Action Log</h2>
+    <div class="log" id="log"></div>
+  </div>
+</div>
+
+<script>
+  let totalReward = 0;
+  let stepCount   = 0;
+  let isDone      = false;
+
+  async function doReset() {
+    const level = parseInt(document.getElementById('sel-level').value);
+    try {
+      const res  = await fetch('/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_level: level }),
+      });
+      const data = await res.json();
+      totalReward = 0; stepCount = 0; isDone = false;
+      document.getElementById('log').innerHTML = '';
+      hideBanner();
+      updateUI(data.observation ?? data, null);
+    } catch (e) { addLog('Reset failed: ' + e.message, false); }
+  }
+
+  async function doAssign() {
+    if (isDone) return;
+    const jobId     = document.getElementById('sel-job').value;
+    const machineId = document.getElementById('sel-machine').value;
+    const action    = `(${jobId}, ${machineId})`;
+    try {
+      const res  = await fetch('/step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      const r    = data.reward ?? 0;
+      totalReward += r;
+      stepCount++;
+      addLog(`Step ${stepCount}  ${action}  →  ${r >= 0 ? '+' : ''}${r.toFixed(1)}`, r >= 0);
+      updateUI(data.observation ?? data, r);
+      if (data.done) {
+        isDone = true;
+        showBanner(totalReward >= 0);
+        setControls(false);
+      }
+    } catch (e) { addLog('Step failed: ' + e.message, false); }
+  }
+
+  function updateUI(obs, lastReward) {
+    if (!obs) return;
+    const t = obs.current_time ?? 0;
+
+    document.getElementById('badge-time').textContent  = `Time: ${t}`;
+    document.getElementById('badge-step').textContent  = `Step: ${stepCount}`;
+    document.getElementById('badge-state').textContent = isDone ? 'Done' : 'Running';
+    document.getElementById('badge-state').className   = 'badge ' + (isDone ? 'badge-red' : 'badge-green');
+    document.getElementById('llm-desc').textContent    = obs.llm_description || '';
+
+    const rewardEl = document.getElementById('total-reward');
+    rewardEl.textContent = totalReward.toFixed(2);
+    rewardEl.className   = 'reward-value ' + (totalReward >= 0 ? 'pos' : 'neg');
+
+    // Jobs table
+    const jobs = obs.job_info || [];
+    document.getElementById('tbl-jobs').innerHTML = jobs.length
+      ? jobs.map(j => {
+          let dot, label;
+          if      (j.done)          { dot = 'dot-gray';   label = 'Done';    }
+          else if (j.is_happening)  { dot = 'dot-yellow'; label = 'Running'; }
+          else if (t > j.deadline)  { dot = 'dot-red';    label = 'Missed';  }
+          else if (t < j.arrival)   { dot = 'dot-gray';   label = 'Not yet'; }
+          else                      { dot = 'dot-green';  label = 'Pending'; }
+          return `<tr>
+            <td><code>${j.id}</code></td>
+            <td>${j.duration}</td>
+            <td>${j.arrival}</td>
+            <td>${j.deadline}</td>
+            <td><span class="dot ${dot}"></span>${label}</td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="5" class="empty-msg">No jobs</td></tr>';
+
+    // Machines table
+    const machines = obs.machine_info || [];
+    document.getElementById('tbl-machines').innerHTML = machines.length
+      ? machines.map(m => `<tr>
+          <td><code>${m.id}</code></td>
+          <td><span class="dot ${m.occupied ? 'dot-yellow' : 'dot-green'}"></span>${m.occupied ? 'Busy' : 'Free'}</td>
+          <td>${m.job_running ?? '—'}</td>
+          <td>${m.occupied ? m.become_free_time : '—'}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="4" class="empty-msg">No machines</td></tr>';
+
+    // Populate assignment selectors
+    const assignable  = jobs.filter(j => !j.done && !j.is_happening && t >= j.arrival);
+    const freeMachines = machines.filter(m => !m.occupied);
+
+    document.getElementById('sel-job').innerHTML = assignable.length
+      ? assignable.map(j => `<option value="${j.id}">Job ${j.id} (dur ${j.duration}, dl ${j.deadline})</option>`).join('')
+      : '<option value="">No assignable jobs</option>';
+
+    document.getElementById('sel-machine').innerHTML = freeMachines.length
+      ? freeMachines.map(m => `<option value="${m.id}">Machine ${m.id}</option>`).join('')
+      : '<option value="">No free machines</option>';
+
+    setControls(!isDone && assignable.length > 0 && freeMachines.length > 0);
+  }
+
+  function setControls(on) {
+    ['sel-job', 'sel-machine', 'btn-assign'].forEach(id => {
+      document.getElementById(id).disabled = !on;
+    });
+  }
+
+  function addLog(msg, positive) {
+    const log  = document.getElementById('log');
+    const line = document.createElement('div');
+    line.className = 'log-line ' + (positive ? 'pos' : 'neg');
+    line.textContent = msg;
+    log.prepend(line);
+  }
+
+  function showBanner(success) {
+    const b = document.getElementById('done-banner');
+    b.className = success ? 'success' : 'fail';
+    b.textContent = success
+      ? `✓ Episode complete — total reward ${totalReward.toFixed(2)}`
+      : `✗ Episode ended with reward ${totalReward.toFixed(2)} — click Reset to try again`;
+    b.style.display = 'block';
+  }
+
+  function hideBanner() {
+    const b = document.getElementById('done-banner');
+    b.style.display = 'none';
+    b.className = '';
+  }
+
+  // Auto-start
+  doReset();
+</script>
+</body>
+</html>

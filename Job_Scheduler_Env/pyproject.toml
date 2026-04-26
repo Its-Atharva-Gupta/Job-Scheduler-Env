@@ -34,3 +34,6 @@ server = "Job_Scheduler_Env.server.app:main"
 include-package-data = true
 packages = ["Job_Scheduler_Env", "Job_Scheduler_Env.server"]
 package-dir = { "Job_Scheduler_Env" = ".", "Job_Scheduler_Env.server" = "server" }
+
+[tool.setuptools.package-data]
+"Job_Scheduler_Env.server" = ["static/*.html"]

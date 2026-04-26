@@ -1,255 +1,162 @@
 ---
 title: Job Scheduler Env Environment Server
-emoji: 🎻
+emoji: 🗓️
 colorFrom: blue
 colorTo: red
 sdk: docker
 pinned: false
 app_port: 8000
-base_path: /web
 tags:
   - openenv
 ---
 
-# Job Scheduler Env Environment
+# Job Scheduler Env
 
-A simple test environment that echoes back messages. Perfect for testing the env APIs as well as demonstrating environment usage patterns.
+A reinforcement learning environment where an agent learns to optimally schedule jobs across machines. Built on Meta's OpenEnv framework, served over HTTP + WebSocket.
+
+## System Architecture
+
+![System Architecture](docs/arch_overview.png)
+
+*The full system: GRPO trainer drives an LLM agent client that communicates with the FastAPI environment server over WebSocket/HTTP. The core environment manages Job and Machine state and computes rewards via the reward engine.*
+
+## Overview
+
+The agent receives a list of jobs (each with a duration, deadline, and arrival time) and a list of machines, and must assign every job to a machine before deadlines expire.
+
+### Episode Lifecycle
+
+![Episode Lifecycle Flowchart](docs/episode_flow.png)
+
+*Each episode: environment resets with randomised jobs and machines → LLM generates an assignment → environment validates, advances simulation time, releases completed jobs, computes reward → repeat until all jobs are done or deadlines have passed.*
+
+### Data Models
+
+![Core Data Models](docs/data_models.png)
+
+*UML class diagram showing the relationships between `Job`, `Machine`, `JobSchedulerEnvEnvironment`, `JobSchedulerEnvAction`, and `JobSchedulerEnvObservation`.*
+
+### Task Levels
+
+| Level | Jobs | Machines |
+|-------|------|----------|
+| 1     | 3    | 3        |
+| 2     | 5    | 4        |
+| 3+    | 7    | 5        |
+
+### Action
+
+```python
+JobSchedulerEnvAction(action="(job_id, machine_id)")
+```
+
+One action assigns one job to one machine. The agent should submit one action per job per episode.
+
+### Observation
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `current_time` | int | Current simulation time |
+| `job_info` | list | All jobs with id, duration, deadline, arrival, status |
+| `machine_info` | list | All machines with id, occupied status, running job |
+| `llm_description` | str | Natural-language summary of current state |
+| `done` | bool | Whether the episode has ended |
+| `reward` | float | Reward received this step |
+
+### Reward
+
+![Reward Signal Design](docs/reward_signal.png)
+
+| Event | Reward |
+|-------|--------|
+| Valid action | +1.0 |
+| Invalid action | -1.0 |
+| Job completed (new this step) | +5.0 |
+| Job completed on time | +2.0 bonus |
+| Job missed deadline (new this step) | -0.5 |
 
 ## Quick Start
-
-The simplest way to use the Job Scheduler Env environment is through the `JobSchedulerEnvEnv` class:
 
 ```python
 from Job_Scheduler_Env import JobSchedulerEnvAction, JobSchedulerEnvEnv
 
-try:
-    # Create environment from Docker image
-    Job_Scheduler_Envenv = JobSchedulerEnvEnv.from_docker_image("Job_Scheduler_Env-env:latest")
+with JobSchedulerEnvEnv(base_url="http://localhost:8000") as env:
+    result = env.reset()
+    obs = result.observation
 
-    # Reset
-    result = Job_Scheduler_Envenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
+    print(obs.llm_description)
+    # e.g. "Time: 0. 3 jobs pending, 0 done, 0 failed. 3/3 machines free."
 
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
-
-    for msg in messages:
-        result = Job_Scheduler_Envenv.step(JobSchedulerEnvAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
-
-finally:
-    # Always clean up
-    Job_Scheduler_Envenv.close()
+    # Assign job 1001 to machine 2001
+    result = env.step(JobSchedulerEnvAction(action="(1001, 2001)"))
+    print(result.reward)
+    print(result.observation.llm_description)
 ```
 
-That's it! The `JobSchedulerEnvEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
+## Running Locally
+
+```bash
+# Install dependencies
+uv sync
+
+# Start the server
+uvicorn server.app:app --reload --port 8000
+```
+
+## GRPO Training (Kaggle / Colab)
+
+A ready-to-run training notebook is included:
+
+```
+train_unsloth_colab.ipynb
+```
+
+It trains `Qwen/Qwen2.5-1.5B-Instruct` with Unsloth + GRPO against the live environment server, and includes a base-vs-fine-tuned comparison cell at the end.
 
 ## Building the Docker Image
 
-Before using the environment, you need to build the Docker image:
-
 ```bash
-# From project root
-docker build -t Job_Scheduler_Env-env:latest -f server/Dockerfile .
+docker build -t job-scheduler-env:latest -f server/Dockerfile .
+```
+
+Connect via Docker:
+
+```python
+env = JobSchedulerEnvEnv.from_docker_image("job-scheduler-env:latest")
 ```
 
 ## Deploying to Hugging Face Spaces
-
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
 
 ```bash
 # From the environment directory (where openenv.yaml is located)
 openenv push
 
-# Or specify options
-openenv push --namespace my-org --private
-```
+# Push to a specific repo
+openenv push --repo-id my-org/job-scheduler-env
 
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
-
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
-```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
+# Push as private
 openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
 ```
 
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
-
-## Environment Details
-
-### Action
-**JobSchedulerEnvAction**: Contains a single field
-- `message` (str) - The message to echo back
-
-### Observation
-**JobSchedulerEnvObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
-
-### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Job Scheduler Env environment server running, you can connect directly:
-
-```python
-from Job_Scheduler_Env import JobSchedulerEnvEnv
-
-# Connect to existing server
-Job_Scheduler_Envenv = JobSchedulerEnvEnv(base_url="<ENV_HTTP_URL_HERE>")
-
-# Use as normal
-result = Job_Scheduler_Envenv.reset()
-result = Job_Scheduler_Envenv.step(JobSchedulerEnvAction(message="Hello!"))
-```
-
-Note: When connecting to an existing server, `Job_Scheduler_Envenv.close()` will NOT stop the server.
-
-### Using the Context Manager
-
-The client supports context manager usage for automatic connection management:
-
-```python
-from Job_Scheduler_Env import JobSchedulerEnvAction, JobSchedulerEnvEnv
-
-# Connect with context manager (auto-connects and closes)
-with JobSchedulerEnvEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
-    # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(JobSchedulerEnvAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
-```
-
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
-
-### Concurrent WebSocket Sessions
-
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
-
-```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    JobSchedulerEnvEnvironment,  # Pass class, not instance
-    JobSchedulerEnvAction,
-    JobSchedulerEnvObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
-```
-
-Then multiple clients can connect simultaneously:
-
-```python
-from Job_Scheduler_Env import JobSchedulerEnvAction, JobSchedulerEnvEnv
-from concurrent.futures import ThreadPoolExecutor
-
-def run_episode(client_id: int):
-    with JobSchedulerEnvEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
-        for i in range(10):
-            result = env.step(JobSchedulerEnvAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
-
-# Run 4 episodes concurrently
-with ThreadPoolExecutor(max_workers=4) as executor:
-    results = list(executor.map(run_episode, range(4)))
-```
-
-## Development & Testing
-
-### Direct Environment Testing
-
-Test the environment logic directly without starting the HTTP server:
-
-```bash
-# From the server directory
-python3 server/Job_Scheduler_Env_environment.py
-```
-
-This verifies that:
-- Environment resets correctly
-- Step executes actions properly
-- State tracking works
-- Rewards are calculated correctly
-
-### Running Locally
-
-Run the server locally for development:
-
-```bash
-uvicorn server.app:app --reload
-```
+After deployment the space exposes:
+- `/web` — Interactive UI
+- `/docs` — OpenAPI/Swagger docs
+- `/health` — Health check
+- `/ws` — WebSocket endpoint
 
 ## Project Structure
 
 ```
 Job_Scheduler_Env/
-├── .dockerignore         # Docker build exclusions
-├── __init__.py            # Module exports
-├── README.md              # This file
-├── openenv.yaml           # OpenEnv manifest
-├── pyproject.toml         # Project metadata and dependencies
-├── uv.lock                # Locked dependencies (generated)
-├── client.py              # JobSchedulerEnvEnv client
-├── models.py              # Action and Observation models
+├── __init__.py                          # Exports JobSchedulerEnvEnv, Action, Observation
+├── client.py                            # HTTP/WebSocket client
+├── models.py                            # Action and Observation pydantic models
+├── openenv.yaml                         # OpenEnv manifest
+├── pyproject.toml                       # Dependencies
+├── train_unsloth_colab.ipynb            # GRPO training notebook
 └── server/
-    ├── __init__.py        # Server module exports
-    ├── Job_Scheduler_Env_environment.py  # Core environment logic
-    ├── app.py             # FastAPI application (HTTP + WebSocket endpoints)
-    └── Dockerfile         # Container image definition
+    ├── app.py                           # FastAPI application
+    ├── Job_Scheduler_Env_environment.py # Core environment logic
+    ├── reward.py                        # Reward computation
+    └── Dockerfile                       # Container image
 ```
